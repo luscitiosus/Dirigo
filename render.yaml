@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: dirigo
+    runtime: python
+    plan: free
+    # El build descarga los textos oficiales (BOE/BOC); si alguno falla, el build sigue.
+    buildCommand: pip install -r requirements.txt && python descargar.py
+    startCommand: python server.py
+    envVars:
+      - key: PORT
+        value: "10000"
+      - key: PYTHON_VERSION
+        value: "3.12.3"
