@@ -91,33 +91,63 @@ def base_boc(anio: int, bol: int) -> str:
     return f"https://www.gobiernodecanarias.org/boc/{anio}/{bol:03d}/"
 
 
-def posicion_boc(anio: int, bol: int, clave: str) -> int:
-    """Posición (1..n) de la disposición dentro del boletín, localizada en el índice."""
+def entradas_indice(anio: int, bol: int) -> list[tuple[int, str]]:
+    """Entradas del índice del boletín como (posición, título). Admite el formato
+    antiguo ('1250 DECRETO ... [PDF]') y el moderno (número solo en una línea y el
+    título en la siguiente)."""
     lin = html_lineas(get(base_boc(anio, bol)))
-    pos = 0
-    for ln in lin:
-        if re.match(r"^\d{1,5}\s+\S", ln) and ln.rstrip().endswith("[PDF]"):
-            pos += 1
-            titulo = normalizar(re.sub(r"^\d+\s+", "", ln))
-            if titulo.startswith(normalizar(clave)):
-                return pos
-    raise LookupError(f"'{clave}' no aparece en el índice del BOC {anio}/{bol}")
+    res, i = [], 0
+    while i < len(lin):
+        ln = lin[i]
+        if re.fullmatch(r"\d{1,5}", ln) and i + 1 < len(lin):
+            res.append((len(res) + 1, lin[i + 1]))
+            i += 2
+            continue
+        m = re.match(r"^\d{1,5}\s+(\S.*)\[PDF\]\s*$", ln)
+        if m:
+            res.append((len(res) + 1, m.group(1)))
+        i += 1
+    return res
 
 
-def lineas_boc(anio: int, bol: int, clave: str) -> list[str]:
-    pos = posicion_boc(anio, bol, clave)
+def _palabras(s: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z0-9]+", normalizar(s)) if len(w) > 3}
+
+
+def posicion_boc(anio: int, bol: int, clave: str, titulo: str) -> int:
+    """Posición de la disposición en el boletín. El título del índice puede ir
+    precedido del órgano ('Dirección General de Personal.- Resolución de...')."""
+    k = normalizar(clave)
+    cand = []
+    for pos, tit in entradas_indice(anio, bol):
+        nt = normalizar(tit)
+        if nt.startswith("correccion"):
+            continue
+        if nt.startswith(k) or (".- " + k) in nt:
+            cand.append((len(_palabras(titulo) & _palabras(tit)), pos))
+    if not cand:
+        raise LookupError(f"'{clave}' no aparece en el índice del BOC {anio}/{bol}")
+    return max(cand)[1]
+
+
+RE_BASURA = re.compile(r"^(\d+\s+p[aá]ginas?\.?.*|formato de archivo.*|tama[ñn]o:.*|boc-a-[\d-]+\.?|firma electr[oó]nica.*|-?\s*descargar.*|-)$", re.I)
+
+
+def lineas_boc(anio: int, bol: int, clave: str, titulo: str) -> list[str]:
+    pos = posicion_boc(anio, bol, clave, titulo)
+    k = normalizar(clave)
     for p in (pos, pos + 1, pos - 1):  # por si el índice y la numeración difieren
         if p < 1:
             continue
         lin = html_lineas(get(f"{base_boc(anio, bol)}{p:03d}.html"))
-        ini = next((i for i, l in enumerate(lin) if re.match(r"^\d+\s+-\s+\S", l) and normalizar(l).split(" - ", 1)[-1].startswith(normalizar(clave))), None)
+        ini = next((i for i, l in enumerate(lin) if not l.startswith("BOC N") and k in normalizar(l)), None)
         if ini is None:
             continue
-        cuerpo = lin[ini + 1:]
-        if cuerpo and cuerpo[0].lower().startswith("descargar en formato"):
-            cuerpo = cuerpo[1:]
-        fin = next((i for i, l in enumerate(cuerpo) if normalizar(l) in ("anterior", "siguiente", "volver", "arriba") or normalizar(l).startswith("gobierno de canarias")), len(cuerpo))
-        return [lin[ini]] + cuerpo[:fin]
+        j = ini + 1
+        while j < len(lin) and RE_BASURA.match(lin[j]):
+            j += 1
+        fin = next((i for i in range(j, len(lin)) if lin[i].startswith("©") or normalizar(lin[i]) == "aviso legal"), len(lin))
+        return [lin[ini]] + lin[j:fin]
     raise LookupError(f"No pude cargar la página de '{clave}' ({anio}/{bol})")
 
 
@@ -145,7 +175,7 @@ def main():
             if f["tipo"] == "boe":
                 lin = lineas_boe(f["id"], f.get("consolidado", False))
             elif f["tipo"] == "boc":
-                lin = lineas_boc(f["anio"], f["boletin"], f["clave"])
+                lin = lineas_boc(f["anio"], f["boletin"], f["clave"], c["titulo"])
             else:
                 lin = lineas_manual(c["n"])
             prec = dividir_preceptos(lin)
