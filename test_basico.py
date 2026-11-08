@@ -61,25 +61,33 @@ assert "[fin]" in server.leer("5", 0, 20000)
 assert "sin texto" in server.normas()
 print("TODO OK")
 
-# --- BOC: formato moderno (2012) y antiguo (2009) del índice y de la página ---
+# --- BOC: se recorren las páginas del boletín hasta el 404 ---
+import urllib.error  # noqa: E402
 import descargar  # noqa: E402
 
-IDX_2012 = b"""<html><body><h3>I. DISPOSICIONES GENERALES</h3><p>328</p><p>ORDEN de 12 de enero de 2012, por la que se establece el ambito.</p>
-<p>5 paginas.</p><p>329</p><p>ORDEN de 12 de enero de 2012, por la que se fijan los indices.</p>
-<p>330</p><p>Direcci\xc3\xb3n General de Tributos.- Resoluci\xc3\xb3n de 13 de enero de 2012, por la que se actualiza.</p><p>331</p><p>ORDEN de 15 de diciembre de 2011, por la que se crea el fichero.</p><p>332</p><p>CORRECCI\xc3\x93N de errores de la Resoluci\xc3\xb3n de 12 de enero de 2012, de X.</p>
-<p>333</p><p>Direcci\xc3\xb3n General de Personal.- Resoluci\xc3\xb3n de 12 de enero de 2012, por la que se dictan instrucciones de procedimiento para la evaluaci\xc3\xb3n de la funci\xc3\xb3n directiva.</p></body></html>"""
-PAG_2012 = b"""<html><body><div>Gobierno de Canarias</div><div>BOC N\xc2\xba 015. Lunes 23 de Enero de 2012 - 333</div><div>333</div>
-<p>Direcci\xc3\xb3n General de Personal.- Resoluci\xc3\xb3n de 12 de enero de 2012, por la que se dictan instrucciones de procedimiento para la evaluaci\xc3\xb3n de la funci\xc3\xb3n directiva.</p>
-<p>9 p\xc3\xa1ginas. Formato de archivo en PDF/Adobe Acrobat.</p><p>BOC-A-2012-015-333.</p><p>Firma electr\xc3\xb3nica-Descargar</p>
-<p>Primero.- Objeto de la resoluci\xc3\xb3n.</p><p>Texto del primero.</p><p>\xc2\xa9 Gobierno de Canarias</p><p>Aviso Legal</p></body></html>"""
-llamadas = []
+def pagina(titulo_linea, cuerpo):
+    return ("<html><body><div>BOC N\u00ba 015. Lunes - 1</div><div>1</div><p>%s</p><p>9 p\u00e1ginas. Formato de archivo en PDF.</p>"
+            "<p>BOC-A-2012-015-333.</p><p>Firma electr\u00f3nica-Descargar</p><p>%s</p><p>\u00a9 Gobierno de Canarias</p><p>Aviso Legal</p></body></html>" % (titulo_linea, cuerpo)).encode()
+
+PAGS = {
+    1: pagina("ORDEN de 12 de enero de 2012, por la que se fijan...", "Otro texto."),
+    2: pagina("CORRECCI\u00d3N de errores de la Resoluci\u00f3n de 12 de enero de 2012, de X.", "Corrige."),
+    3: pagina("Direcci\u00f3n General de Personal.- Resoluci\u00f3n de 12 de enero de 2012, por la que se dictan instrucciones para la evaluaci\u00f3n de la funci\u00f3n directiva.", "Texto del primero."),
+}
 def falso_get(url, accept="*/*"):
-    llamadas.append(url)
-    return PAG_2012 if url.endswith("006.html") else IDX_2012
+    n = int(url.rsplit("/", 1)[1].split(".")[0])
+    if n in PAGS:
+        return PAGS[n]
+    raise urllib.error.HTTPError(url, 404, "nf", None, None)
 descargar.get = falso_get
 cat = json.loads((RAIZ / "catalogo.json").read_text("utf-8"))
 c9 = next(c for c in cat if c["n"] == 9)
 lin = descargar.lineas_boc(2012, 15, c9["fuente"]["clave"], c9["titulo"])
-assert llamadas[-1].endswith("/boc/2012/015/006.html"), llamadas
-assert lin[0].startswith("Dirección General de Personal") and "Texto del primero." in lin and not any("©" in x or "Aviso" in x or "BOC-A" in x for x in lin), lin
+assert lin[0].startswith("Direcci\u00f3n General de Personal") and "Texto del primero." in lin, lin
+assert not any("\u00a9" in x or "Aviso" in x or "BOC-A" in x or "Firma" in x for x in lin), lin
+try:
+    descargar.lineas_boc(2012, 15, "decreto 1/2000", "x")
+    raise SystemExit("deber\u00eda fallar")
+except LookupError:
+    pass
 print("BOC OK")

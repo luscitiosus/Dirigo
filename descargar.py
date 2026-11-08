@@ -9,6 +9,7 @@ import datetime
 import json
 import re
 import sys
+import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
@@ -91,64 +92,56 @@ def base_boc(anio: int, bol: int) -> str:
     return f"https://www.gobiernodecanarias.org/boc/{anio}/{bol:03d}/"
 
 
-def entradas_indice(anio: int, bol: int) -> list[tuple[int, str]]:
-    """Entradas del índice del boletín como (posición, título). Admite el formato
-    antiguo ('1250 DECRETO ... [PDF]') y el moderno (número solo en una línea y el
-    título en la siguiente)."""
-    lin = html_lineas(get(base_boc(anio, bol)))
-    res, i = [], 0
-    while i < len(lin):
-        ln = lin[i]
-        if re.fullmatch(r"\d{1,5}", ln) and i + 1 < len(lin):
-            res.append((len(res) + 1, lin[i + 1]))
-            i += 2
-            continue
-        m = re.match(r"^\d{1,5}\s+(\S.*)\[PDF\]\s*$", ln)
-        if m:
-            res.append((len(res) + 1, m.group(1)))
-        i += 1
-    return res
+def _es_titulo(linea: str, k: str) -> bool:
+    """¿Es la línea el título de la disposición buscada (k = clave normalizada)?
+    Admite número delante ('4744 ORDEN...') y órgano delante ('Dirección General.- Resolución...')."""
+    nt = re.sub(r"^\d{1,5}\s*[-–]?\s*", "", normalizar(linea))
+    return not nt.startswith("correccion") and (nt.startswith(k) or (".- " + k) in nt)
 
 
-def _palabras(s: str) -> set[str]:
-    return {w for w in re.findall(r"[a-z0-9]+", normalizar(s)) if len(w) > 3}
+def _cargar_pagina(anio: int, bol: int, pos: int):
+    try:
+        return html_lineas(get(f"{base_boc(anio, bol)}{pos:03d}.html"))
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None
+        raise
 
 
-def posicion_boc(anio: int, bol: int, clave: str, titulo: str) -> int:
-    """Posición de la disposición en el boletín. El título del índice puede ir
-    precedido del órgano ('Dirección General de Personal.- Resolución de...')."""
-    k = normalizar(clave)
-    cand = []
-    for pos, tit in entradas_indice(anio, bol):
-        nt = normalizar(tit)
-        if nt.startswith("correccion"):
-            continue
-        if nt.startswith(k) or (".- " + k) in nt:
-            cand.append((len(_palabras(titulo) & _palabras(tit)), pos))
-    if not cand:
-        raise LookupError(f"'{clave}' no aparece en el índice del BOC {anio}/{bol}")
-    return max(cand)[1]
+def _extraer(lin: list[str], k: str):
+    """Devuelve las líneas de la disposición si la página es la buscada; si no, None."""
+    ini = next((i for i, l in enumerate(lin[:60]) if not l.startswith("BOC N") and _es_titulo(l, k)), None)
+    if ini is None:
+        return None
+    j = ini + 1
+    while j < len(lin) and RE_BASURA.match(lin[j]):
+        j += 1
+    fin = next((i for i in range(j, len(lin)) if lin[i].startswith("©") or normalizar(lin[i]) == "aviso legal"), len(lin))
+    return [lin[ini]] + lin[j:fin]
 
 
 RE_BASURA = re.compile(r"^(\d+\s+p[aá]ginas?\.?.*|formato de archivo.*|tama[ñn]o:.*|boc-a-[\d-]+\.?|firma electr[oó]nica.*|-?\s*descargar.*|-)$", re.I)
 
 
 def lineas_boc(anio: int, bol: int, clave: str, titulo: str) -> list[str]:
-    pos = posicion_boc(anio, bol, clave, titulo)
+    """Recorre las páginas del boletín (001.html, 002.html... hasta el primer 404) hasta
+    hallar la disposición. No depende del formato del índice, que cambia según el año."""
     k = normalizar(clave)
-    for p in (pos, pos + 1, pos - 1):  # por si el índice y la numeración difieren
-        if p < 1:
+    mejor = None
+    for pos in range(1, 121):
+        lin = _cargar_pagina(anio, bol, pos)
+        if lin is None:
+            break
+        res = _extraer(lin, k)
+        if res is None:
             continue
-        lin = html_lineas(get(f"{base_boc(anio, bol)}{p:03d}.html"))
-        ini = next((i for i, l in enumerate(lin) if not l.startswith("BOC N") and k in normalizar(l)), None)
-        if ini is None:
-            continue
-        j = ini + 1
-        while j < len(lin) and RE_BASURA.match(lin[j]):
-            j += 1
-        fin = next((i for i in range(j, len(lin)) if lin[i].startswith("©") or normalizar(lin[i]) == "aviso legal"), len(lin))
-        return [lin[ini]] + lin[j:fin]
-    raise LookupError(f"No pude cargar la página de '{clave}' ({anio}/{bol})")
+        # si hubiera varias candidatas (p. ej. dos órdenes del mismo día), gana la de más palabras en común
+        w = len({x for x in re.findall(r"[a-z0-9]{4,}", normalizar(titulo))} & {x for x in re.findall(r"[a-z0-9]{4,}", normalizar(res[0]))})
+        if mejor is None or w > mejor[0]:
+            mejor = (w, res)
+    if mejor:
+        return mejor[1]
+    raise LookupError(f"'{clave}' no aparece en las {pos - 1} páginas del BOC {anio}/{bol}")
 
 
 # ---------- manual ----------
