@@ -141,7 +141,19 @@ def lineas_boc(anio: int, bol: int, clave: str, titulo: str) -> list[str]:
             mejor = (w, res)
     if mejor:
         return mejor[1]
-    raise LookupError(f"'{clave}' no aparece en las {pos - 1} páginas del BOC {anio}/{bol}")
+    # Boletines recientes (2025-26): la página se llama como el número de la disposición
+    # (4231.html), no por su posición. Los números salen de los identificadores BOC-A-AAAA-BBB-N.
+    indice = get(base_boc(anio, bol)).decode("utf-8", "replace")
+    numeros = list(dict.fromkeys(re.findall(rf"BOC-A-{anio}-0*{bol}-(\d+)", indice)))
+    for num in numeros:
+        try:
+            lin = html_lineas(get(f"{base_boc(anio, bol)}{num}.html"))
+        except urllib.error.HTTPError:
+            continue
+        res = _extraer(lin, k)
+        if res is not None:
+            return res
+    raise LookupError(f"'{clave}' no aparece en el BOC {anio}/{bol} (páginas por posición: {pos - 1}; por número: {len(numeros)})")
 
 
 # ---------- manual ----------
